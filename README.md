@@ -111,6 +111,49 @@ The application is containerized and includes:
 
 Use `docker-compose up -d` to start all services.
 
+## Testing RTP Packets with simple_caller.py
+
+The `simple_caller.py` script provides detailed RTP packet logging functionality for testing and debugging purposes.
+
+### Prerequisites
+
+Ensure all required environment variables are set:
+```bash
+SIP_USER=your_sip_user
+SIP_DOMAIN=your_sip_domain
+SIP_AUTH_REALM=your_auth_realm
+SIP_AUTH_USERNAME=your_auth_username
+SIP_AUTH_PASSWORD=your_auth_password
+```
+
+### Running the Test
+
+1. Execute the script:
+```bash
+python simple_caller.py
+```
+
+2. The script will log detailed RTP information in two locations:
+   - Console (standard output)
+   - `sip_caller.log` file in the same directory
+
+### Log Information
+
+The logs will contain:
+- RTP transport details (local and remote addresses)
+- RTP packet statistics (transmitted, received, lost)
+- RTP stream creation and destruction events
+- Quality metrics (jitter and other parameters)
+
+### Real-time Log Monitoring
+
+To monitor the logs in real-time:
+```bash
+tail -f sip_caller.log
+```
+
+Note: The `sip_caller.log` file is included in `.gitignore` and won't be tracked in the repository.
+
 ## Contributing
 
 1. Fork the repository

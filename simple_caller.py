@@ -113,86 +113,92 @@ class CallCallback(pj.CallCallback):
             logger.error(f"Error parsing SDP from logs: {str(e)}")
             logger.error(f"Message was: {message}")
 
-    def send_dtmf_rtp(self, digit, duration=160, volume=10):
+    def _get_public_ip(self):
+        """Get public IP using STUN"""
         try:
-            # Используем сохраненные параметры или значения по умолчанию
-            remote_ip = self.remote_rtp_ip or "46.19.209.17"
-            remote_port = self.remote_rtp_port or 25728
+            # Get STUN server from environment variable
+            stun_server = os.getenv('STUN_SERVER', 'stun.l.google.com:19302')
+            stun_host, stun_port_str = stun_server.split(':')
+            stun_port = int(stun_port_str)
             
-            # DTMF event mapping
-            dtmf_events = {
-                '0': 0, '1': 1, '2': 2, '3': 3, '4': 4,
-                '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-                '*': 10, '#': 11, 'A': 12, 'B': 13, 'C': 14, 'D': 15
-            }
+            logger.info(f"Using STUN server from environment: {stun_host}:{stun_port}")
             
-            event = dtmf_events.get(str(digit).upper())
-            if event is None:
-                raise ValueError(f"Invalid DTMF digit: {digit}")
-
-            # Create UDP socket and bind to local address
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(('0.0.0.0', 0))  # Bind to any interface, random port
-            local_port = sock.getsockname()[1]
+            sock.settimeout(3)  # 3 seconds timeout
+            
+            try:
+                stun_ip = socket.gethostbyname(stun_host)
+                logger.info(f"Resolved {stun_host} to {stun_ip}")
+            except socket.gaierror as e:
+                logger.error(f"Failed to resolve {stun_host}: {e}")
+                return None
 
-            # RTP header fields
-            version = 2
-            padding = 0
-            extension = 0
-            csrc_count = 0
-            marker = 1
-            payload_type = 101  # RFC 2833 events
-            sequence = random.randint(0, 65535)
-            timestamp = random.randint(0, 2**32 - 1)
-            ssrc = random.randint(0, 2**32 - 1)
-
-            # Send start packets (3 times for reliability)
-            for i in range(3):
-                rtp_header = struct.pack('!BBHII',
-                    (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
-                    (marker << 7) | payload_type,
-                    sequence + i,
-                    timestamp + (i * 160),
-                    ssrc)
-                    
-                dtmf_payload = bytes([
-                    event,
-                    0x80 | (volume & 0x3F),
-                    (duration >> 8) & 0xFF,
-                    duration & 0xFF
-                ])
+            # STUN header
+            bind_request = bytes([
+                0x00, 0x01,  # Message Type: Binding Request
+                0x00, 0x00,  # Message Length
+                0x21, 0x12, 0xA4, 0x42,  # Magic Cookie
+                # Transaction ID (16 bytes)
+                *[random.randint(0, 255) for _ in range(16)]
+            ])
+            
+            logger.info(f"Sending STUN request to {stun_host}")
+            sock.sendto(bind_request, (stun_ip, stun_port))
+            
+            response = sock.recv(2048)
+            logger.info(f"Got response from {stun_host}, length: {len(response)}")
+            
+            # Extract XOR-MAPPED-ADDRESS
+            pos = 20
+            while pos < len(response):
+                attr_type = int.from_bytes(response[pos:pos+2], byteorder='big')
+                attr_len = int.from_bytes(response[pos+2:pos+4], byteorder='big')
                 
-                rtp_packet = rtp_header + dtmf_payload
-                sock.sendto(rtp_packet, (remote_ip, remote_port))
-                time.sleep(0.02)
-
-            # Send end packets (3 times for reliability)
-            for i in range(3):
-                rtp_header = struct.pack('!BBHII',
-                    (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
-                    (marker << 7) | payload_type,
-                    sequence + i + 3,
-                    timestamp + ((i + 3) * 160),
-                    ssrc)
+                if attr_type == 0x0020:  # XOR-MAPPED-ADDRESS
+                    xor_ip = response[pos+8:pos+12]
+                    magic_cookie = bytes([0x21, 0x12, 0xA4, 0x42])
+                    ip_bytes = bytes(a ^ b for a, b in zip(xor_ip, magic_cookie))
+                    ip = '.'.join(str(b) for b in ip_bytes)
+                    logger.info(f"Successfully got public IP from {stun_host}: {ip}")
+                    return ip
                     
-                dtmf_payload = bytes([
-                    event,
-                    0xC0 | (volume & 0x3F),
-                    (duration >> 8) & 0xFF,
-                    duration & 0xFF
-                ])
+                pos += 4 + attr_len
                 
-                rtp_packet = rtp_header + dtmf_payload
-                sock.sendto(rtp_packet, (remote_ip, remote_port))
-                time.sleep(0.02)
-
-            logger.info(f"DTMF {digit} sent via RTP to {remote_ip}:{remote_port}")
+            raise Exception(f"No XOR-MAPPED-ADDRESS found in response from {stun_host}")
             
         except Exception as e:
-            logger.error(f"Error sending DTMF via RTP: {str(e)}")
+            logger.error(f"Error getting public IP: {str(e)}")
+            return None
+            
         finally:
-            if 'sock' in locals():
-                sock.close()
+            sock.close()
+
+    def send_dtmf_rtp(self, digits):
+        try:
+            # Get call info and verify media state
+            call_info = self.call.info()
+            logger.info(f"pj.MediaDir = {dir(pj.MediaDir)}")
+            
+            # Check if media is active
+            if not call_info.media_dir == pj.MediaDir.ENCODING_DECODING:
+                raise Exception("Media not active")
+            
+            # Convert digits to string and ensure proper format
+            digits_str = str(digits).strip()
+            
+            # Send DTMF directly without checking bytes
+            try:
+                self.call.dial_dtmf(digits_str.encode('utf-8'))
+                logger.info(f"Successfully sent DTMF: {digits_str}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error sending DTMF: {str(e)}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error in send_dtmf_rtp: {str(e)}")
+            return False
 
     def on_state(self):
         global call
@@ -369,13 +375,16 @@ def main():
 
         # Configure the library
         ua_cfg = pj.UAConfig()
+        ua_cfg.nat_public_addr = '77.72.130.44'
         ua_cfg.max_calls = 1
+        ua_cfg.stun_host = 'stun.l.google.com:19302'
         ua_cfg.user_agent = "PJSUA Simple Caller"
         ua_cfg.nameserver = ["8.8.8.8", "8.8.4.4"]
 
         media_cfg = pj.MediaConfig()
+        media_cfg.public_addr = '77.72.130.44'
         media_cfg.no_vad = True
-        media_cfg.enable_ice = False
+        media_cfg.enable_ice = True
         media_cfg.clock_rate = 8000
         media_cfg.snd_clock_rate = 8000
         media_cfg.audio_frame_ptime = 20
@@ -437,11 +446,11 @@ def main():
             # Проверяем условия для отправки DTMF
             if (call_cb.media_start_time is not None and 
                 not call_cb.dtmf_sent and 
-                time.time() - call_cb.media_start_time >= 10):
+                time.time() - call_cb.media_start_time >= 5):
                 try:
-                    call_cb.send_dtmf_rtp('2')
+                    call_cb.send_dtmf_rtp('*2')
                     call_cb.dtmf_sent = True
-                    logger.info("\n\n\n\nDTMF '2' sent after 10 seconds\n\n\n\n")
+                    logger.info("\n\n\n\nDTMF '2' sent after 5 seconds\n\n\n\n")
                 except Exception as e:
                     logger.error(f"Failed to send DTMF: {str(e)}")
                     

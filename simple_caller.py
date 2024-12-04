@@ -36,11 +36,18 @@ def signal_handler(signum, frame):
     logger.info("Signal received, stopping...")
     quit_flag = True
 
+current_call_cb = None
+
 # Logging callback
 def log_cb(level, msg, length):
     try:
         message = msg.decode('utf-8', errors='replace')
         logger.info(f"PJSIP: {message}")
+        
+        # Если есть активный колбэк звонка, пробуем парсить SDP
+        if current_call_cb and 'Content-Type: application/sdp' in message:
+            current_call_cb._parse_sdp_from_logs(message)
+            
     except Exception as e:
         logger.error(f"Error in log callback: {str(e)}")
 
@@ -53,27 +60,64 @@ class CallCallback(pj.CallCallback):
         self.call_state = None
         self.rtp_stats = {'tx_packets': 0, 'rx_packets': 0}
         self.last_log_time = time.time()
-        self.media_start_time = None  # Добавляем это
+        self.media_start_time = None
         self.dtmf_sent = False
+        self.remote_rtp_ip = None
+        self.remote_rtp_port = None
+        self.local_ip = None
+        self.local_port = None
+        
+    def _parse_sdp(self, message):
+        """Parse SDP from SIP message to get RTP info"""
+        try:
+            lines = message.split('\n')
+            for line in lines:
+                if line.startswith('c=IN IP4 '):
+                    self.remote_rtp_ip = line.split()[2]
+                elif line.startswith('m=audio '):
+                    self.remote_rtp_port = int(line.split()[1])
+            logger.info(f"Parsed SDP - Remote RTP: {self.remote_rtp_ip}:{self.remote_rtp_port}")
+        except Exception as e:
+            logger.error(f"Error parsing SDP: {str(e)}")
 
+    def _parse_sdp_from_logs(self, message):
+        logger.info("\n\n\n\n\n---------------------------------------------------\n\n\n")
+        logger.info(f"MEssage logs: {message}")
+        logger.info("\n\n\n\n\n---------------------------------------------------\n\n\n")
+        """Parse SDP from logged SIP messages"""
+        try:
+            # Ищем строки с SDP в сообщении
+            if 'Content-Type: application/sdp' in message:
+                # Находим SDP часть после двойного перевода строки
+                parts = message.split('\n\n')
+                # Ищем часть с SDP (после заголовков)
+                for part in parts:
+                    if part.startswith('v=0'):
+                        sdp_part = part
+                        break
+                else:
+                    return
+
+                # Парсим строки SDP
+                for line in sdp_part.split('\n'):
+                    if line.startswith('c=IN IP4 '):
+                        self.remote_rtp_ip = line.split()[2]
+                        logger.info(f"Found remote IP: {self.remote_rtp_ip}")
+                    elif line.startswith('m=audio '):
+                        self.remote_rtp_port = int(line.split()[1])
+                        logger.info(f"Found remote port: {self.remote_rtp_port}")
+
+                if self.remote_rtp_ip and self.remote_rtp_port:
+                    logger.info(f"Successfully parsed SDP - Remote RTP: {self.remote_rtp_ip}:{self.remote_rtp_port}")
+        except Exception as e:
+            logger.error(f"Error parsing SDP from logs: {str(e)}")
+            logger.error(f"Message was: {message}")
 
     def send_dtmf_rtp(self, digit, duration=160, volume=10):
-        """
-        Send DTMF using raw UDP socket with RFC 2833 format
-        
-        Args:
-            digit: DTMF character (0-9,*,#,A-D)
-            duration: Duration in timestamp units (default 160 = 20ms @ 8kHz)
-            volume: Volume level 0-63 (default 10)
-        """
         try:
-            # Get call info
-            call_info = self.call.info()
-            
-            # Log call state for debugging
-            logger.info("\n=== Call Info for DTMF ===")
-            logger.info(f"State: {call_info.state}")
-            logger.info(f"State text: {call_info.state_text}")
+            # Используем сохраненные параметры или значения по умолчанию
+            remote_ip = self.remote_rtp_ip or "46.19.209.17"
+            remote_port = self.remote_rtp_port or 25728
             
             # DTMF event mapping
             dtmf_events = {
@@ -86,13 +130,11 @@ class CallCallback(pj.CallCallback):
             if event is None:
                 raise ValueError(f"Invalid DTMF digit: {digit}")
 
-            # Create UDP socket
+            # Create UDP socket and bind to local address
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
-            # Get remote RTP address from SDP (hardcoded from the log for testing)
-            remote_ip = "46.19.209.17"
-            remote_port = 23680
-            
+            sock.bind(('0.0.0.0', 0))  # Bind to any interface, random port
+            local_port = sock.getsockname()[1]
+
             # RTP header fields
             version = 2
             padding = 0
@@ -103,67 +145,52 @@ class CallCallback(pj.CallCallback):
             sequence = random.randint(0, 65535)
             timestamp = random.randint(0, 2**32 - 1)
             ssrc = random.randint(0, 2**32 - 1)
-            
-            # Pack RTP header (12 bytes)
-            # Format: !BBHII (! = network byte order)
-            # Byte 1: Version(2), Padding(1), Extension(1), CSRC count(4)
-            # Byte 2: Marker(1), Payload type(7)
-            # Bytes 3-4: Sequence number
-            # Bytes 5-8: Timestamp
-            # Bytes 9-12: SSRC
-            rtp_header = struct.pack('!BBHII',
-                (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
-                (marker << 7) | payload_type,
-                sequence,
-                timestamp,
-                ssrc)
+
+            # Send start packets (3 times for reliability)
+            for i in range(3):
+                rtp_header = struct.pack('!BBHII',
+                    (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
+                    (marker << 7) | payload_type,
+                    sequence + i,
+                    timestamp + (i * 160),
+                    ssrc)
+                    
+                dtmf_payload = bytes([
+                    event,
+                    0x80 | (volume & 0x3F),
+                    (duration >> 8) & 0xFF,
+                    duration & 0xFF
+                ])
                 
-            # Create DTMF event payload
-            dtmf_payload = bytes([
-                event,                    # Event ID
-                0x80 | (volume & 0x3F),  # End=1, Reserved=0, Volume=volume
-                (duration >> 8) & 0xFF,   # Duration high byte
-                duration & 0xFF           # Duration low byte
-            ])
-            
-            # Combine RTP header and DTMF payload
-            rtp_packet = rtp_header + dtmf_payload
-            
-            # Send packet
-            sock.sendto(rtp_packet, (remote_ip, remote_port))
-            
-            # Send end packet after 20ms
-            time.sleep(0.02)
-            
-            # Update sequence and timestamp
-            sequence = (sequence + 1) & 0xFFFF
-            timestamp = (timestamp + 160) & 0xFFFFFFFF
-            
-            # Create end packet
-            rtp_header = struct.pack('!BBHII',
-                (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
-                (marker << 7) | payload_type,
-                sequence,
-                timestamp,
-                ssrc)
+                rtp_packet = rtp_header + dtmf_payload
+                sock.sendto(rtp_packet, (remote_ip, remote_port))
+                time.sleep(0.02)
+
+            # Send end packets (3 times for reliability)
+            for i in range(3):
+                rtp_header = struct.pack('!BBHII',
+                    (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
+                    (marker << 7) | payload_type,
+                    sequence + i + 3,
+                    timestamp + ((i + 3) * 160),
+                    ssrc)
+                    
+                dtmf_payload = bytes([
+                    event,
+                    0xC0 | (volume & 0x3F),
+                    (duration >> 8) & 0xFF,
+                    duration & 0xFF
+                ])
                 
-            dtmf_payload = bytes([
-                event,                    # Event ID
-                0xC0 | (volume & 0x3F),  # End=1, Reserved=1, Volume=volume
-                (duration >> 8) & 0xFF,   # Duration high byte
-                duration & 0xFF           # Duration low byte
-            ])
-            
-            rtp_packet = rtp_header + dtmf_payload
-            sock.sendto(rtp_packet, (remote_ip, remote_port))
-            
-            # Close socket
-            sock.close()
-            
-            logger.info(f"\n\nDTMF {digit} sent via raw UDP to {remote_ip}:{remote_port}\n\n")
+                rtp_packet = rtp_header + dtmf_payload
+                sock.sendto(rtp_packet, (remote_ip, remote_port))
+                time.sleep(0.02)
+
+            logger.info(f"DTMF {digit} sent via RTP to {remote_ip}:{remote_port}")
             
         except Exception as e:
             logger.error(f"Error sending DTMF via RTP: {str(e)}")
+        finally:
             if 'sock' in locals():
                 sock.close()
 
@@ -196,6 +223,7 @@ class CallCallback(pj.CallCallback):
                 logger.info("\n\n\n\nSET TIME MEDIA START\n\n\n\n\n")
                 self.media_start_time = time.time()
                 call_slot = self.call.info().conf_slot
+            
                 logger.info("Media state is active, setting up recording...")
                 
                 # Логируем информацию о медиа-транспорте
@@ -253,6 +281,7 @@ class CallCallback(pj.CallCallback):
     def _log_media_transport_info(self):
         """Логирование информации о медиа-транспорте"""
         try:
+            logger.info(f"uri = {self.call.info().uri()}")
             med_info = self.call.info().media[0]
             rtp_tp = med_info.rtp_tx_pt
             local_rtp = med_info.rtp_addr
@@ -393,8 +422,9 @@ def main():
         # Make call
         number = "18008677183"
         logger.info(f"\nCalling {number}...")
-        
+        global current_call_cb
         call_cb = CallCallback()
+        current_call_cb = call_cb  # Устанавливаем текущий колбэк
         call = acc.make_call(f"sip:{number}@{os.getenv('SIP_DOMAIN')}", cb=call_cb)
 
         # Main event loop

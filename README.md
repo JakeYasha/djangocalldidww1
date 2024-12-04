@@ -126,16 +126,19 @@ SIP_AUTH_USERNAME=your_auth_username
 SIP_AUTH_PASSWORD=your_auth_password
 ```
 
-### Running the Test
+### Running the Test Script
 
-1. Execute the script:
+To run the test script with RTP logging:
+
 ```bash
-python simple_caller.py
+# Rebuild and restart only the simple-caller service
+docker-compose up --force-recreate simple-caller
 ```
 
-2. The script will log detailed RTP information in two locations:
-   - Console (standard output)
-   - `sip_caller.log` file in the same directory
+This command will:
+- Rebuild the simple-caller container with latest changes
+- Start the script with proper environment variables
+- Output logs to both console and sip_caller.log
 
 ### Log Information
 

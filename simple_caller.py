@@ -8,6 +8,10 @@ import traceback
 from datetime import datetime
 import signal
 
+import socket
+import struct
+import random
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +53,119 @@ class CallCallback(pj.CallCallback):
         self.call_state = None
         self.rtp_stats = {'tx_packets': 0, 'rx_packets': 0}
         self.last_log_time = time.time()
+        self.media_start_time = None  # Добавляем это
+        self.dtmf_sent = False
+
+
+    def send_dtmf_rtp(self, digit, duration=160, volume=10):
+        """
+        Send DTMF using raw UDP socket with RFC 2833 format
+        
+        Args:
+            digit: DTMF character (0-9,*,#,A-D)
+            duration: Duration in timestamp units (default 160 = 20ms @ 8kHz)
+            volume: Volume level 0-63 (default 10)
+        """
+        try:
+            # Get call info
+            call_info = self.call.info()
+            
+            # Log call state for debugging
+            logger.info("\n=== Call Info for DTMF ===")
+            logger.info(f"State: {call_info.state}")
+            logger.info(f"State text: {call_info.state_text}")
+            
+            # DTMF event mapping
+            dtmf_events = {
+                '0': 0, '1': 1, '2': 2, '3': 3, '4': 4,
+                '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
+                '*': 10, '#': 11, 'A': 12, 'B': 13, 'C': 14, 'D': 15
+            }
+            
+            event = dtmf_events.get(str(digit).upper())
+            if event is None:
+                raise ValueError(f"Invalid DTMF digit: {digit}")
+
+            # Create UDP socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # Get remote RTP address from SDP (hardcoded from the log for testing)
+            remote_ip = "46.19.209.17"
+            remote_port = 23680
+            
+            # RTP header fields
+            version = 2
+            padding = 0
+            extension = 0
+            csrc_count = 0
+            marker = 1
+            payload_type = 101  # RFC 2833 events
+            sequence = random.randint(0, 65535)
+            timestamp = random.randint(0, 2**32 - 1)
+            ssrc = random.randint(0, 2**32 - 1)
+            
+            # Pack RTP header (12 bytes)
+            # Format: !BBHII (! = network byte order)
+            # Byte 1: Version(2), Padding(1), Extension(1), CSRC count(4)
+            # Byte 2: Marker(1), Payload type(7)
+            # Bytes 3-4: Sequence number
+            # Bytes 5-8: Timestamp
+            # Bytes 9-12: SSRC
+            rtp_header = struct.pack('!BBHII',
+                (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
+                (marker << 7) | payload_type,
+                sequence,
+                timestamp,
+                ssrc)
+                
+            # Create DTMF event payload
+            dtmf_payload = bytes([
+                event,                    # Event ID
+                0x80 | (volume & 0x3F),  # End=1, Reserved=0, Volume=volume
+                (duration >> 8) & 0xFF,   # Duration high byte
+                duration & 0xFF           # Duration low byte
+            ])
+            
+            # Combine RTP header and DTMF payload
+            rtp_packet = rtp_header + dtmf_payload
+            
+            # Send packet
+            sock.sendto(rtp_packet, (remote_ip, remote_port))
+            
+            # Send end packet after 20ms
+            time.sleep(0.02)
+            
+            # Update sequence and timestamp
+            sequence = (sequence + 1) & 0xFFFF
+            timestamp = (timestamp + 160) & 0xFFFFFFFF
+            
+            # Create end packet
+            rtp_header = struct.pack('!BBHII',
+                (version << 6) | (padding << 5) | (extension << 4) | csrc_count,
+                (marker << 7) | payload_type,
+                sequence,
+                timestamp,
+                ssrc)
+                
+            dtmf_payload = bytes([
+                event,                    # Event ID
+                0xC0 | (volume & 0x3F),  # End=1, Reserved=1, Volume=volume
+                (duration >> 8) & 0xFF,   # Duration high byte
+                duration & 0xFF           # Duration low byte
+            ])
+            
+            rtp_packet = rtp_header + dtmf_payload
+            sock.sendto(rtp_packet, (remote_ip, remote_port))
+            
+            # Close socket
+            sock.close()
+            
+            logger.info(f"\n\nDTMF {digit} sent via raw UDP to {remote_ip}:{remote_port}\n\n")
+            
+        except Exception as e:
+            logger.error(f"Error sending DTMF via RTP: {str(e)}")
+            if 'sock' in locals():
+                sock.close()
 
     def on_state(self):
         global call
@@ -75,6 +192,9 @@ class CallCallback(pj.CallCallback):
         global wav_player, call_slot
         try:
             if self.call.info().media_state == pj.MediaState.ACTIVE:
+                
+                logger.info("\n\n\n\nSET TIME MEDIA START\n\n\n\n\n")
+                self.media_start_time = time.time()
                 call_slot = self.call.info().conf_slot
                 logger.info("Media state is active, setting up recording...")
                 
@@ -283,6 +403,19 @@ def main():
             lib.handle_events(100)
             if call_cb.call_state == pj.CallState.DISCONNECTED:
                 break
+
+            # Проверяем условия для отправки DTMF
+            if (call_cb.media_start_time is not None and 
+                not call_cb.dtmf_sent and 
+                time.time() - call_cb.media_start_time >= 10):
+                try:
+                    call_cb.send_dtmf_rtp('2')
+                    call_cb.dtmf_sent = True
+                    logger.info("\n\n\n\nDTMF '2' sent after 10 seconds\n\n\n\n")
+                except Exception as e:
+                    logger.error(f"Failed to send DTMF: {str(e)}")
+                    
+
             time.sleep(0.1)
             call_duration += 0.1
 

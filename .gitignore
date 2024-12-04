@@ -17,6 +17,9 @@ db.sqlite3
 db.sqlite3-journal
 media/
 
+# Log files
+sip_caller.log
+
 # Virtual Environment
 venv/
 env/

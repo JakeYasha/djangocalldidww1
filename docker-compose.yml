@@ -1,0 +1,118 @@
+version: '3'
+
+services:
+  web:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/home/appuser/app
+      - ./recordings:/home/appuser/app/recordings
+      - /tmp/pulseaudio.socket:/tmp/pulseaudio.socket
+      - ${XDG_RUNTIME_DIR}/pulse:/run/user/1000/pulse
+    environment:
+      - TZ=UTC
+      - PULSE_SERVER=unix:/tmp/pulseaudio.socket
+      - PULSE_COOKIE=/tmp/pulseaudio.cookie
+      - PULSE_LATENCY_MSEC=30
+      - ALSA_CARD=0
+      - LOCAL_IP=${LOCAL_IP}
+      - STUN_SERVER=stun.l.google.com:19302
+      - DJANGO_SETTINGS_MODULE=phone_tracker.settings
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - POSTGRES_HOST=db
+      - SIP_USER=${SIP_USER}
+      - SIP_DOMAIN=${SIP_DOMAIN}
+      - SIP_AUTH_REALM=${SIP_AUTH_REALM}
+      - SIP_AUTH_USERNAME=${SIP_AUTH_USERNAME}
+      - SIP_AUTH_PASSWORD=${SIP_AUTH_PASSWORD}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - db
+    command: python manage.py runserver 0.0.0.0:8000
+    restart: unless-stopped
+    devices:
+      - /dev/snd:/dev/snd
+    privileged: true
+    group_add:
+      - audio
+
+  celery:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/home/appuser/app
+      - ./recordings:/home/appuser/app/recordings
+      - /tmp/pulseaudio.socket:/tmp/pulseaudio.socket
+      - ${XDG_RUNTIME_DIR}/pulse:/run/user/1000/pulse
+    environment:
+      - TZ=UTC
+      - PULSE_SERVER=unix:/tmp/pulseaudio.socket
+      - PULSE_COOKIE=/tmp/pulseaudio.cookie
+      - PULSE_LATENCY_MSEC=30
+      - ALSA_CARD=0
+      - LOCAL_IP=${LOCAL_IP}
+      - STUN_SERVER=stun.l.google.com:19302
+      - DJANGO_SETTINGS_MODULE=phone_tracker.settings
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - POSTGRES_HOST=db
+      - SIP_USER=${SIP_USER}
+      - SIP_DOMAIN=${SIP_DOMAIN}
+      - SIP_AUTH_REALM=${SIP_AUTH_REALM}
+      - SIP_AUTH_USERNAME=${SIP_AUTH_USERNAME}
+      - SIP_AUTH_PASSWORD=${SIP_AUTH_PASSWORD}
+      - EXTERNAL_HOST=${EXTERNAL_HOST}
+    depends_on:
+      - redis
+      - db
+    command: celery -A phone_tracker worker -l info
+    restart: unless-stopped
+    devices:
+      - /dev/snd:/dev/snd
+    privileged: true
+    group_add:
+      - audio
+
+  celery-beat:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/home/appuser/app
+    environment:
+      - DJANGO_SETTINGS_MODULE=phone_tracker.settings
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - POSTGRES_HOST=db
+      - SIP_USER=${SIP_USER}
+      - SIP_DOMAIN=${SIP_DOMAIN}
+      - SIP_AUTH_REALM=${SIP_AUTH_REALM}
+      - SIP_AUTH_USERNAME=${SIP_AUTH_USERNAME}
+      - SIP_AUTH_PASSWORD=${SIP_AUTH_PASSWORD}
+      - EXTERNAL_HOST=${EXTERNAL_HOST}
+    depends_on:
+      - redis
+      - db
+      - celery
+    command: celery -A phone_tracker beat -l info
+    restart: unless-stopped
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6378:6379"
+    restart: unless-stopped
+
+  db:
+    image: postgres:13
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=phone_tracker
+      - POSTGRES_USER=phone_tracker
+      - POSTGRES_PASSWORD=phone_tracker_pass
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Добавление номеров телефонов</h2>
+                </div>
+                <div class="card-body">
+                    <form method="post">
+                        {% csrf_token %}
+                        
+                        {% if messages %}
+                        <div class="messages">
+                            {% for message in messages %}
+                            <div class="alert alert-{{ message.tags }}">
+                                {{ message }}
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <div class="form-group">
+                            <label for="phone_numbers">Введите номера телефонов</label>
+                            <textarea class="form-control" id="phone_numbers" name="phone_numbers" rows="10" 
+                                    placeholder="Вставьте номера телефонов в любом формате. Например:
++1 123 345-67
+189991234567
+1 (1999) 123-45-67
+и т.д."></textarea>
+                            <small class="form-text text-muted">Вставьте номера телефонов в любом формате. Система автоматически распознает и обработает их.</small>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-phone-plus"></i> Добавить номер(а)
+                        </button>
+                        <a href="{% url 'phone_number_list' %}" class="btn btn-secondary ml-2">
+                            <i class="fas fa-list"></i> Список номеров
+                        </a>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

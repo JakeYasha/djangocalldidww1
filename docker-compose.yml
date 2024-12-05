@@ -96,6 +96,37 @@ services:
     command: celery -A phone_tracker beat -l info
     restart: unless-stopped
 
+  simple-caller:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/home/appuser/app
+      - ./recordings:/home/appuser/app/recordings
+      - /tmp/pulseaudio.socket:/tmp/pulseaudio.socket
+      - ${XDG_RUNTIME_DIR}/pulse:/run/user/1000/pulse
+    environment:
+      - TZ=UTC
+      - PULSE_SERVER=unix:/tmp/pulseaudio.socket
+      - PULSE_COOKIE=/tmp/pulseaudio.cookie
+      - PULSE_LATENCY_MSEC=30
+      - ALSA_CARD=0
+      - LOCAL_IP=${LOCAL_IP}
+      - STUN_SERVER=stun.l.google.com:19302
+      - SIP_USER=${SIP_USER}
+      - SIP_DOMAIN=${SIP_DOMAIN}
+      - SIP_AUTH_REALM=${SIP_AUTH_REALM}
+      - SIP_AUTH_USERNAME=${SIP_AUTH_USERNAME}
+      - SIP_AUTH_PASSWORD=${SIP_AUTH_PASSWORD}
+    entrypoint: ["python", "simple_caller.py"]
+    devices:
+      - /dev/snd:/dev/snd
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    group_add:
+      - audio
+
   redis:
     image: redis:latest
     ports:

@@ -382,9 +382,10 @@ def main():
         ua_cfg.nameserver = ["8.8.8.8", "8.8.4.4"]
 
         media_cfg = pj.MediaConfig()
-        media_cfg.public_addr = '77.72.130.44'
+        media_cfg.nat_public_addr = '77.72.130.44'
         media_cfg.no_vad = True
         media_cfg.enable_ice = True
+        media_cfg.tel_ev_pt = 101  # Устанавливаем payload type для telephone-event
         media_cfg.clock_rate = 8000
         media_cfg.snd_clock_rate = 8000
         media_cfg.audio_frame_ptime = 20
@@ -399,6 +400,22 @@ def main():
 
         # Set null sound device
         lib.set_null_snd_dev()
+
+        # Устанавливаем payload type для кодека telephone-event
+        codec_list = lib.enum_codecs()
+        # logger.info(f"codec_list = {dir(codec_list)}")
+        # logger.info(f"codec_list = {codec_list}")
+        for codec_info in codec_list:
+            logger.info(f"codec_info = {codec_info}")
+            if 'telephone-event' in codec_info.name:
+                # Получаем текущие параметры кодека
+                param = lib.get_codec_parameter(codec_info.name)
+                logger.info(f"Current parameters for {codec_info.name}: {param}")
+                
+                # Устанавливаем payload type в 101
+                lib.set_codec_parameter(codec_info.name, "pt", "101")
+                logger.info(f"Set payload type for {codec_info.name} to 101")
+
 
         # Create UDP transport
         transport = lib.create_transport(pj.TransportType.UDP)
@@ -448,7 +465,11 @@ def main():
                 not call_cb.dtmf_sent and 
                 time.time() - call_cb.media_start_time >= 5):
                 try:
-                    call_cb.send_dtmf_rtp('*2')
+                    call_cb.send_dtmf_rtp('2')
+                    # time.sleep(1)
+                    # call_cb.send_dtmf_rtp('1')
+                    # time.sleep(1)
+                    # call_cb.send_dtmf_rtp('2')
                     call_cb.dtmf_sent = True
                     logger.info("\n\n\n\nDTMF '2' sent after 5 seconds\n\n\n\n")
                 except Exception as e:

@@ -375,14 +375,14 @@ def main():
 
         # Configure the library
         ua_cfg = pj.UAConfig()
-        ua_cfg.nat_public_addr = '77.72.130.44'
+        ua_cfg.nat_public_addr = os.getenv('LOCAL_IP')
         ua_cfg.max_calls = 1
         ua_cfg.stun_host = 'stun.l.google.com:19302'
         ua_cfg.user_agent = "PJSUA Simple Caller"
         ua_cfg.nameserver = ["8.8.8.8", "8.8.4.4"]
 
         media_cfg = pj.MediaConfig()
-        media_cfg.nat_public_addr = '77.72.130.44'
+        media_cfg.nat_public_addr = os.getenv('LOCAL_IP')
         media_cfg.no_vad = True
         media_cfg.enable_ice = True
         media_cfg.tel_ev_pt = 101  # Устанавливаем payload type для telephone-event
